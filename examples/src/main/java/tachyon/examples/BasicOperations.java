@@ -26,46 +26,45 @@ import org.slf4j.LoggerFactory;
 import tachyon.Constants;
 import tachyon.TachyonURI;
 import tachyon.Version;
-import tachyon.client.ReadType;
-import tachyon.client.TachyonFS;
-import tachyon.client.TachyonFile;
-import tachyon.client.WriteType;
 import tachyon.client.file.FileInStream;
 import tachyon.client.file.FileOutStream;
-import tachyon.conf.TachyonConf;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.thrift.BlockInfoException;
+import tachyon.thrift.FileAlreadyExistException;
+import tachyon.thrift.FileDoesNotExistException;
+import tachyon.thrift.InvalidPathException;
 import tachyon.util.CommonUtils;
 import tachyon.util.FormatUtils;
 
 public class BasicOperations implements Callable<Boolean> {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
-  private final TachyonURI mMasterLocation;
   private final TachyonURI mFilePath;
-  private final WriteType mWriteType;
   private final int mNumbers = 20;
 
-  public BasicOperations(TachyonURI masterLocation, TachyonURI filePath, WriteType writeType) {
-    mMasterLocation = masterLocation;
+  public BasicOperations(TachyonURI filePath) {
     mFilePath = filePath;
-    mWriteType = writeType;
   }
 
   @Override
   public Boolean call() throws Exception {
-    TachyonFS tachyonClient = TachyonFS.get(mMasterLocation, new TachyonConf());
-    createFile(tachyonClient);
-    writeFile(tachyonClient);
-    return readFile(tachyonClient);
+    TachyonFileSystem fileSystem = TachyonFileSystem.get();
+    FileOutStream outStream = createFile(fileSystem);
+    writeFile(fileSystem, outStream);
+    return false;
+//    return readFile(fileSystem);
   }
 
-  private void createFile(TachyonFS tachyonClient) throws IOException {
+  private FileOutStream createFile(TachyonFileSystem fileSystem) throws IOException, InvalidPathException,
+          FileAlreadyExistException, BlockInfoException {
     LOG.debug("Creating file...");
     long startTimeMs = CommonUtils.getCurrentMs();
-    long fileId = tachyonClient.createFile(mFilePath);
-    LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "createFile with fileId " + fileId));
+    FileOutStream outStream = fileSystem.getOutStream(mFilePath);
+    LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "createFile with path " + mFilePath.getPath()));
+    return outStream;
   }
 
-  private void writeFile(TachyonFS tachyonClient) throws IOException {
+  private void writeFile(TachyonFileSystem fileSystem, FileOutStream outStream) throws IOException {
     ByteBuffer buf = ByteBuffer.allocate(mNumbers * 4);
     buf.order(ByteOrder.nativeOrder());
     for (int k = 0; k < mNumbers; k ++) {
@@ -77,42 +76,37 @@ public class BasicOperations implements Callable<Boolean> {
     buf.flip();
 
     long startTimeMs = CommonUtils.getCurrentMs();
-    TachyonFile file = tachyonClient.getFile(mFilePath);
-    FileOutStream os = file.getOutStream(mWriteType);
-    os.write(buf.array());
-    os.close();
+    outStream.write(buf.array());
+    outStream.close();
 
     LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "writeFile to file " + mFilePath));
   }
 
-  private boolean readFile(TachyonFS tachyonClient) throws IOException {
+  private boolean readFile(TachyonFileSystem fileSystem) throws IOException,
+          InvalidPathException, FileDoesNotExistException {
+    FileInStream inStream = fileSystem.getInStream(fileSystem.open(mFilePath));
+
     boolean pass = true;
     LOG.debug("Reading data...");
 
     final long startTimeMs = CommonUtils.getCurrentMs();
-    TachyonFile file = tachyonClient.getFile(mFilePath);
-    FileInStream is = file.getInStream(ReadType.CACHE);
-    ByteBuffer buf = ByteBuffer.allocate((int) file.getBlockSizeByte());
-    is.read(buf.array());
-    buf.order(ByteOrder.nativeOrder());
     for (int k = 0; k < mNumbers; k ++) {
-      pass = pass && (buf.getInt() == k);
+      pass = pass && (inStream.read() == k);
     }
-    is.close();
+    inStream.close();
 
     LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "readFile file " + mFilePath));
     return pass;
   }
 
   public static void main(String[] args) throws IllegalArgumentException {
-    if (args.length != 3) {
+    if (args.length != 1) {
       System.out.println("java -cp target/tachyon-" + Version.VERSION
           + "-jar-with-dependencies.jar "
-          + "tachyon.examples.BasicOperations <TachyonMasterAddress> <FilePath> <WriteType>");
+          + "tachyon.examples.BasicOperations <FilePath>");
       System.exit(-1);
     }
 
-    Utils.runExample(new BasicOperations(new TachyonURI(args[0]), new TachyonURI(args[1]),
-        WriteType.valueOf(args[2])));
+    Utils.runExample(new BasicOperations(new TachyonURI(args[0])));
   }
 }
